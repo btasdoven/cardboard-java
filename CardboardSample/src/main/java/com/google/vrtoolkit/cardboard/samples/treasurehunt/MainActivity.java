@@ -23,7 +23,11 @@ import com.google.vrtoolkit.cardboard.HeadTransform;
 import com.google.vrtoolkit.cardboard.Viewport;
 
 import android.content.Context;
+import android.graphics.Bitmap;
+import android.graphics.BitmapFactory;
+import android.opengl.GLES10;
 import android.opengl.GLES20;
+import android.opengl.GLUtils;
 import android.opengl.Matrix;
 import android.os.Bundle;
 import android.os.Vibrator;
@@ -36,6 +40,7 @@ import java.io.InputStreamReader;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.FloatBuffer;
+import java.nio.ShortBuffer;
 
 import javax.microedition.khronos.egl.EGLConfig;
 
@@ -71,8 +76,12 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   private FloatBuffer cubeFoundColors;
   private FloatBuffer cubeNormals;
 
+    private FloatBuffer cubeBuffer;
+    private ShortBuffer indexBuffer;
+
   private int cubeProgram;
   private int floorProgram;
+    private int sphereProgram;
 
   private int cubePositionParam;
   private int cubeNormalParam;
@@ -90,6 +99,15 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   private int floorModelViewProjectionParam;
   private int floorLightPosParam;
 
+    private int sphereSamplerParam;
+    private int spherePositionParam;
+    private int sphereNormalParam;
+    private int sphereModelParam;
+    private int sphereModelViewParam;
+    private int sphereModelViewProjectionParam;
+    private int sphereLightPosParam;
+    private int sphereTexture;
+
   private float[] modelCube;
   private float[] camera;
   private float[] view;
@@ -97,6 +115,7 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   private float[] modelViewProjection;
   private float[] modelView;
   private float[] modelFloor;
+    private float[] modelSphere;
 
   private int score = 0;
   private float objectDistance = 12f;
@@ -104,6 +123,19 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
 
   private Vibrator vibrator;
   private CardboardOverlayView overlayView;
+
+  /**
+   * Checks if we've had an error inside of OpenGL ES, and if so what that error is.
+   *
+   * @param label Label to report in case of error.
+   */
+  private static void checkGLError(String label) {
+    int error;
+    while ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
+      Log.e(TAG, label + ": glError " + error);
+      throw new RuntimeException(label + ": glError " + error);
+    }
+  }
 
   /**
    * Converts a raw text file, saved as a resource, into an OpenGL ES shader.
@@ -137,19 +169,6 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   }
 
   /**
-   * Checks if we've had an error inside of OpenGL ES, and if so what that error is.
-   *
-   * @param label Label to report in case of error.
-   */
-  private static void checkGLError(String label) {
-    int error;
-    while ((error = GLES20.glGetError()) != GLES20.GL_NO_ERROR) {
-      Log.e(TAG, label + ": glError " + error);
-      throw new RuntimeException(label + ": glError " + error);
-    }
-  }
-
-  /**
    * Sets the view to our CardboardView and initializes the transformation matrices we will use
    * to render our scene.
    */
@@ -168,6 +187,7 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     modelViewProjection = new float[16];
     modelView = new float[16];
     modelFloor = new float[16];
+      modelSphere = new float[16];
     headView = new float[16];
     vibrator = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
 
@@ -197,6 +217,10 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
   @Override
   public void onSurfaceCreated(EGLConfig config) {
     Log.i(TAG, "onSurfaceCreated");
+
+      sphereTexture = loadGLTexture(getApplicationContext(), R.drawable.sample2);
+        Log.e(TAG, sphereTexture + " is the texture id");
+
     GLES20.glClearColor(0.1f, 0.1f, 0.1f, 0.5f); // Dark background so text shows up well.
 
     ByteBuffer bbVertices = ByteBuffer.allocateDirect(WorldLayoutData.CUBE_COORDS.length * 4);
@@ -243,17 +267,31 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     floorColors.put(WorldLayoutData.FLOOR_COLORS);
     floorColors.position(0);
 
+      cubeBuffer = null;
+      indexBuffer = null;
+
+      cubeBuffer = ByteBuffer.allocateDirect(WorldLayoutData.cube.length * 4).order(ByteOrder.nativeOrder()).asFloatBuffer();
+      cubeBuffer.put(WorldLayoutData.cube);
+      cubeBuffer.position(0);
+
+      indexBuffer = ByteBuffer.allocateDirect(WorldLayoutData.indeces.length * 2).order(ByteOrder.nativeOrder()).asShortBuffer();
+      indexBuffer.put(WorldLayoutData.indeces);
+      indexBuffer.position(0);
+
     int vertexShader = loadGLShader(GLES20.GL_VERTEX_SHADER, R.raw.light_vertex);
     int gridShader = loadGLShader(GLES20.GL_FRAGMENT_SHADER, R.raw.grid_fragment);
     int passthroughShader = loadGLShader(GLES20.GL_FRAGMENT_SHADER, R.raw.passthrough_fragment);
 
+      int sphereVertexShader = loadGLShader(GLES20.GL_VERTEX_SHADER, R.raw.sphere_vertex);
+      int sphereFragmentShader = loadGLShader(GLES20.GL_FRAGMENT_SHADER, R.raw.sphere_fragment);
+
     cubeProgram = GLES20.glCreateProgram();
     GLES20.glAttachShader(cubeProgram, vertexShader);
     GLES20.glAttachShader(cubeProgram, passthroughShader);
-    GLES20.glLinkProgram(cubeProgram);
-    GLES20.glUseProgram(cubeProgram);
+      GLES20.glLinkProgram(cubeProgram);
+      GLES20.glUseProgram(cubeProgram);
 
-    checkGLError("Cube program");
+      checkGLError("Cube program");
 
     cubePositionParam = GLES20.glGetAttribLocation(cubeProgram, "a_Position");
     cubeNormalParam = GLES20.glGetAttribLocation(cubeProgram, "a_Normal");
@@ -268,15 +306,15 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     GLES20.glEnableVertexAttribArray(cubeNormalParam);
     GLES20.glEnableVertexAttribArray(cubeColorParam);
 
-    checkGLError("Cube program params");
+      checkGLError("Cube program params");
 
     floorProgram = GLES20.glCreateProgram();
     GLES20.glAttachShader(floorProgram, vertexShader);
     GLES20.glAttachShader(floorProgram, gridShader);
-    GLES20.glLinkProgram(floorProgram);
-    GLES20.glUseProgram(floorProgram);
+      GLES20.glLinkProgram(floorProgram);
+      GLES20.glUseProgram(floorProgram);
 
-    checkGLError("Floor program");
+      checkGLError("Floor program");
 
     floorModelParam = GLES20.glGetUniformLocation(floorProgram, "u_Model");
     floorModelViewParam = GLES20.glGetUniformLocation(floorProgram, "u_MVMatrix");
@@ -291,7 +329,35 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     GLES20.glEnableVertexAttribArray(floorNormalParam);
     GLES20.glEnableVertexAttribArray(floorColorParam);
 
-    checkGLError("Floor program params");
+      checkGLError("Floor program params");
+
+
+
+      sphereProgram = GLES20.glCreateProgram();
+      GLES20.glAttachShader(sphereProgram, sphereVertexShader);
+      GLES20.glAttachShader(sphereProgram, sphereFragmentShader);
+      GLES20.glLinkProgram(sphereProgram);
+      GLES20.glUseProgram(sphereProgram);
+
+      checkGLError("Sphere program");
+
+      sphereModelParam = GLES20.glGetUniformLocation(sphereProgram, "u_Model");
+      sphereModelViewParam = GLES20.glGetUniformLocation(sphereProgram, "u_MVMatrix");
+      sphereModelViewProjectionParam = GLES20.glGetUniformLocation(sphereProgram, "u_MVP");
+      sphereLightPosParam = GLES20.glGetUniformLocation(sphereProgram, "u_LightPos");
+
+      sphereSamplerParam = GLES20.glGetUniformLocation(sphereProgram, "s_Texture");
+      if (sphereSamplerParam == -1)
+          Log.e(TAG, "sampler is null");
+
+      spherePositionParam = GLES20.glGetAttribLocation(sphereProgram, "a_Position");
+      //sphereNormalParam = GLES20.glGetAttribLocation(sphereProgram, "a_Normal");
+
+      GLES20.glEnableVertexAttribArray(spherePositionParam);
+      //GLES20.glEnableVertexAttribArray(sphereNormalParam);
+
+      checkGLError("Sphere program params");
+
 
     // Object first appears directly in front of user.
     Matrix.setIdentityM(modelCube, 0);
@@ -299,6 +365,11 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
 
     Matrix.setIdentityM(modelFloor, 0);
     Matrix.translateM(modelFloor, 0, 0, -floorDepth, 0); // Floor appears below user.
+
+      Matrix.setIdentityM(modelSphere, 0);
+      Matrix.rotateM(modelSphere, 0, 90, 1, 0, 0);
+      Matrix.scaleM(modelSphere, 0, 50, 50, 50);
+      //Matrix.translateM(modelSphere, 0, 0, 0, -objectDistance/2);
 
     checkGLError("onSurfaceCreated");
   }
@@ -365,18 +436,23 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     // Build the ModelView and ModelViewProjection matrices
     // for calculating cube position and light.
     float[] perspective = eye.getPerspective(Z_NEAR, Z_FAR);
-    Matrix.multiplyMM(modelView, 0, view, 0, modelCube, 0);
-    Matrix.multiplyMM(modelViewProjection, 0, perspective, 0, modelView, 0);
-    drawCube();
+
+    //Matrix.multiplyMM(modelView, 0, view, 0, modelCube, 0);
+    //Matrix.multiplyMM(modelViewProjection, 0, perspective, 0, modelView, 0);
+    //drawCube();
 
     // Set modelView for the floor, so we draw floor in the correct location
-    Matrix.multiplyMM(modelView, 0, view, 0, modelFloor, 0);
-    Matrix.multiplyMM(modelViewProjection, 0, perspective, 0,
-      modelView, 0);
-    drawFloor();
+    //Matrix.multiplyMM(modelView, 0, view, 0, modelFloor, 0);
+    //Matrix.multiplyMM(modelViewProjection, 0, perspective, 0, modelView, 0);
+    //drawFloor();
+
+      // Set modelView for the floor, so we draw floor in the correct location
+      Matrix.multiplyMM(modelView, 0, view, 0, modelSphere, 0);
+      Matrix.multiplyMM(modelViewProjection, 0, perspective, 0, modelView, 0);
+      drawSphere();
   }
 
-  @Override
+    @Override
   public void onFinishFrame(Viewport viewport) {
   }
 
@@ -390,27 +466,53 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
 
     GLES20.glUniform3fv(cubeLightPosParam, 1, lightPosInEyeSpace, 0);
 
-    // Set the Model in the shader, used to calculate lighting
+      // Set the Model in the shader, used to calculate lighting
     GLES20.glUniformMatrix4fv(cubeModelParam, 1, false, modelCube, 0);
 
-    // Set the ModelView in the shader, used to calculate lighting
+      // Set the ModelView in the shader, used to calculate lighting
     GLES20.glUniformMatrix4fv(cubeModelViewParam, 1, false, modelView, 0);
 
-    // Set the position of the cube
-    GLES20.glVertexAttribPointer(cubePositionParam, COORDS_PER_VERTEX, GLES20.GL_FLOAT,
-        false, 0, cubeVertices);
+      // Set the position of the cube
+      GLES20.glVertexAttribPointer(cubePositionParam, COORDS_PER_VERTEX, GLES20.GL_FLOAT,
+              false, 0, cubeVertices);
 
-    // Set the ModelViewProjection matrix in the shader.
+      // Set the ModelViewProjection matrix in the shader.
     GLES20.glUniformMatrix4fv(cubeModelViewProjectionParam, 1, false, modelViewProjection, 0);
 
     // Set the normal positions of the cube, again for shading
     GLES20.glVertexAttribPointer(cubeNormalParam, 3, GLES20.GL_FLOAT, false, 0, cubeNormals);
-    GLES20.glVertexAttribPointer(cubeColorParam, 4, GLES20.GL_FLOAT, false, 0,
-        isLookingAtObject() ? cubeFoundColors : cubeColors);
+      GLES20.glVertexAttribPointer(cubeColorParam, 4, GLES20.GL_FLOAT, false, 0,
+              isLookingAtObject() ? cubeFoundColors : cubeColors);
 
     GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 36);
     checkGLError("Drawing cube");
   }
+
+    /**
+     * Draw the floor.
+     *
+     * <p>This feeds in data for the floor into the shader. Note that this doesn't feed in data about
+     * position of the light, so if we rewrite our code to draw the floor first, the lighting might
+     * look strange.
+     */
+    public void drawSphere() {
+        GLES20.glUseProgram(sphereProgram);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, sphereTexture);
+
+        // Set ModelView, MVP, position, normals, and color.
+        GLES20.glUniform3fv(sphereLightPosParam, 1, lightPosInEyeSpace, 0);
+        GLES20.glUniformMatrix4fv(sphereModelParam, 1, false, modelSphere, 0);
+        GLES20.glUniformMatrix4fv(sphereModelViewParam, 1, false, modelView, 0);
+        GLES20.glUniformMatrix4fv(sphereModelViewProjectionParam, 1, false, modelViewProjection, 0);
+        GLES20.glUniform1i(sphereSamplerParam, 0);
+
+        GLES20.glVertexAttribPointer(spherePositionParam, 3, GLES20.GL_FLOAT, false, 12, cubeBuffer);
+
+        GLES20.glDrawElements(GLES20.GL_TRIANGLES, 192 * 3, GLES20.GL_UNSIGNED_SHORT, indexBuffer);
+
+        checkGLError("drawing sphere");
+    }
 
   /**
    * Draw the floor.
@@ -425,13 +527,13 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
     // Set ModelView, MVP, position, normals, and color.
     GLES20.glUniform3fv(floorLightPosParam, 1, lightPosInEyeSpace, 0);
     GLES20.glUniformMatrix4fv(floorModelParam, 1, false, modelFloor, 0);
-    GLES20.glUniformMatrix4fv(floorModelViewParam, 1, false, modelView, 0);
+      GLES20.glUniformMatrix4fv(floorModelViewParam, 1, false, modelView, 0);
     GLES20.glUniformMatrix4fv(floorModelViewProjectionParam, 1, false,
-        modelViewProjection, 0);
-    GLES20.glVertexAttribPointer(floorPositionParam, COORDS_PER_VERTEX, GLES20.GL_FLOAT,
-        false, 0, floorVertices);
+            modelViewProjection, 0);
+      GLES20.glVertexAttribPointer(floorPositionParam, COORDS_PER_VERTEX, GLES20.GL_FLOAT,
+              false, 0, floorVertices);
     GLES20.glVertexAttribPointer(floorNormalParam, 3, GLES20.GL_FLOAT, false, 0,
-        floorNormals);
+            floorNormals);
     GLES20.glVertexAttribPointer(floorColorParam, 4, GLES20.GL_FLOAT, false, 0, floorColors);
 
     GLES20.glDrawArrays(GLES20.GL_TRIANGLES, 0, 6);
@@ -505,4 +607,38 @@ public class MainActivity extends CardboardActivity implements CardboardView.Ste
 
     return Math.abs(pitch) < PITCH_LIMIT && Math.abs(yaw) < YAW_LIMIT;
   }
+
+
+    /**
+     * Load the texture for the square.
+     *
+     * @param context Handle.
+     * @param texture Texture map for the sphere.
+     */
+    public int loadGLTexture(final Context context, final int texture) {
+        // Generate one texture pointer, and bind it to the texture array.
+        int tex[] = new int[1];
+        GLES20.glGenTextures(1, tex, 0);
+        GLES20.glActiveTexture(GLES20.GL_TEXTURE0);
+        GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex[0]);
+
+        // Create nearest filtered texture.
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MIN_FILTER, GLES20.GL_NEAREST);
+        GLES20.glTexParameterf(GLES20.GL_TEXTURE_2D, GLES20.GL_TEXTURE_MAG_FILTER, GLES20.GL_LINEAR);
+
+        // Use Android GLUtils to specify a two-dimensional texture image from our bitmap.
+        final Bitmap bitmap = BitmapFactory.decodeResource(context.getResources(), texture);
+        if (bitmap == null) {
+            throw new RuntimeException("Bitmap is NULL");
+        }
+
+        GLUtils.texImage2D(GLES20.GL_TEXTURE_2D, 0, bitmap, 0);
+        bitmap.recycle();
+
+        if (tex[0] == 0) {
+            throw new RuntimeException("Error loading texture.");
+        }
+
+        return tex[0];
+    }
 }
